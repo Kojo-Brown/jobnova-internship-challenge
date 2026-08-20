@@ -62,7 +62,10 @@ export class ApplyWorkflow {
       try {
         const deadline = Date.now() + timeoutMinutes * 60_000
         while (Date.now() < deadline) {
-          await probe.waitForTimeout(10_000)
+          // generous interval: frequent probe reloads look bot-like to
+          // Cloudflare and can re-trigger the very challenge the operator
+          // is trying to clear
+          await probe.waitForTimeout(30_000)
           if (page.isClosed()) {
             this.log('Login window was closed before login completed.')
             return false
