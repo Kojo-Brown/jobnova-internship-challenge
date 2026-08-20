@@ -19,7 +19,7 @@ const BASE = 'https://www.indeed.com'
  * can complete the check in a headed browser.
  */
 export class IndeedClient {
-  constructor(private readonly page: Page) {}
+  constructor(private page: Page) {}
 
   /**
    * Detect verification walls. Order matters: a CAPTCHA page may also contain
@@ -126,7 +126,13 @@ export class IndeedClient {
     if (!(await applyButton.isVisible({ timeout: 5000 }).catch(() => false))) {
       return { outcome: 'failed', reason: 'No Easily apply button on this posting (external ATS?)' }
     }
+    // The apply wizard (smartapply.indeed.com) may open in a popup tab.
+    const popupPromise = this.page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null)
     await applyButton.click()
+    const popup = await popupPromise
+    if (popup) {
+      this.page = popup
+    }
     await this.page.waitForLoadState('domcontentloaded')
 
     // The apply wizard is a multi-step form; walk up to 12 steps.

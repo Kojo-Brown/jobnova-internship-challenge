@@ -68,18 +68,15 @@ export function createServer() {
   })
 
   app.post('/workflow/discover', async (_req, res) => {
-    const { workflow } = await withWorkflow()
-    await runExclusive(res, () => workflow.discoverJobs())
+    await runExclusive(res, async () => (await withWorkflow()).workflow.discoverJobs())
   })
 
   app.post('/workflow/run', async (_req, res) => {
-    const { workflow } = await withWorkflow()
-    await runExclusive(res, () => workflow.run())
+    await runExclusive(res, async () => (await withWorkflow()).workflow.run())
   })
 
   app.post('/workflow/resume', async (_req, res) => {
-    const { workflow } = await withWorkflow()
-    await runExclusive(res, () => workflow.resume())
+    await runExclusive(res, async () => (await withWorkflow()).workflow.resume())
   })
 
   app.post('/applications/:id/retry', async (req, res) => {

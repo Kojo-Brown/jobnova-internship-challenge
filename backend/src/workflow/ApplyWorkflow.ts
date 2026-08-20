@@ -107,15 +107,24 @@ export class ApplyWorkflow {
       if (!(await client.isLoggedIn())) {
         // Pause everything: the operator must re-establish the session.
         for (const record of queue) {
-          const paused =
-            record.status === 'manual_action_required'
-              ? record
-              : await applications.transition(
-                  record.id,
-                  record.status === 'pending' ? 'in_progress' : record.status,
-                  'Started processing',
-                ).then((r) => applications.transition(r.id, 'manual_action_required', 'Indeed session expired — manual login required', { manualAction: 'login_required', checkpoint: 'login' }))
-          summary.pausedForManualAction.push(paused)
+          if (record.status === 'manual_action_required') {
+            summary.pausedForManualAction.push(record)
+            continue
+          }
+          // pending records must pass through in_progress; interrupted
+          // in_progress records can pause directly
+          const inProgress =
+            record.status === 'pending'
+              ? await applications.transition(record.id, 'in_progress', 'Started processing')
+              : record
+          summary.pausedForManualAction.push(
+            await applications.transition(
+              inProgress.id,
+              'manual_action_required',
+              'Indeed session expired — manual login required',
+              { manualAction: 'login_required', checkpoint: 'login' },
+            ),
+          )
         }
         this.log('Session invalid/expired — run "login" to re-authenticate, then "resume".')
         return summary

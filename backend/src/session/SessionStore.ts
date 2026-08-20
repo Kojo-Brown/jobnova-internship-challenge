@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { decrypt, encrypt } from './crypto.js'
 
@@ -31,7 +31,6 @@ export class SessionStore {
     const payload = encrypt(JSON.stringify(state), this.keyHex)
     const tmp = `${file}.tmp`
     await writeFile(tmp, payload, 'utf8')
-    const { rename } = await import('node:fs/promises')
     await rename(tmp, file)
   }
 
