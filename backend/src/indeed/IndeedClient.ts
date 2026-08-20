@@ -225,9 +225,11 @@ export class IndeedClient {
       }
 
       const submit = this.page.locator(
-        'button:has-text("Submit your application"), button:has-text("Submit application")',
+        'button:has-text("Submit your application"), button:has-text("Submit application"), button[data-testid*="submit" i]',
       )
-      if (await this.waitVisible(submit, 500)) {
+      // the review-module page renders slowly and offers ONLY this button
+      const submitWait = /review/i.test(this.page.url()) ? 10_000 : 1500
+      if (await this.waitVisible(submit, submitWait)) {
         await this.visible(submit).click()
         await this.page.waitForTimeout(2500)
         challenge = await this.detectChallenge()
