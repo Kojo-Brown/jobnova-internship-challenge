@@ -148,35 +148,62 @@ export class IndeedClient {
     let challenge = await this.detectChallenge()
     if (challenge) return { outcome: 'manual', kind: challenge.kind, checkpoint: 'view_job', description: challenge.description }
 
+    // Indeed A/B-tests this button: id, testid and label all vary.
     const applyButton = this.page
-      .locator('#indeedApplyButton, button:has-text("Easily apply"), button:has-text("Apply now")')
+      .locator(
+        '[data-testid="indeedApplyButton-test"], #indeedApplyButton, ' +
+          'button:has-text("Apply with Indeed"), button:has-text("Easily apply"), button:has-text("Apply now")',
+      )
       .first()
     if (!(await this.waitVisible(applyButton, 8000))) {
       return { outcome: 'failed', reason: 'No Easily apply button on this posting (external ATS?)' }
     }
 
-    // The apply wizard (smartapply.indeed.com) opens either in a popup tab or
-    // in-place; race the two so neither path adds a fixed stall.
-    const popupPromise = this.page.context().waitForEvent('page', { timeout: 10_000 }).catch(() => null)
-    const navPromise = this.page
-      .waitForURL(/smartapply|apply/i, { timeout: 10_000 })
-      .then(() => null)
-      .catch(() => null)
-    await applyButton.click()
-    const popup = await Promise.race([popupPromise, navPromise])
+    // Let React hydrate — a click before the handler attaches is a silent
+    // no-op — then click with retries. The wizard (smartapply.indeed.com)
+    // opens either in a popup tab or in-place.
+    await this.page.waitForTimeout(2500)
+    let popup: Page | null = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const popupPromise = this.page.context().waitForEvent('page', { timeout: 5000 }).catch(() => null)
+      await applyButton.click().catch(() => undefined)
+      popup = await popupPromise
+      if (popup) break
+      await this.page.waitForTimeout(2000)
+      if (/smartapply/i.test(this.page.url())) break
+    }
     if (popup) {
       onPopup(popup)
       this.page = popup
+    } else if (!/smartapply/i.test(this.page.url())) {
+      return { outcome: 'failed', reason: 'Apply wizard did not open after 3 click attempts' }
     }
     await this.page.waitForLoadState('domcontentloaded').catch(() => undefined)
 
     // The apply wizard is a multi-step form; walk up to 12 steps.
     for (let step = 0; step < 12; step++) {
-      await this.page.waitForTimeout(1200)
+      // each wizard step fetches its content client-side — give it room
+      await this.page.waitForTimeout(2500)
 
       challenge = await this.detectChallenge()
       if (challenge) {
         return { outcome: 'manual', kind: challenge.kind, checkpoint: `apply_step_${step}`, description: challenge.description }
+      }
+
+      // Resume-selection step: the uploaded file resume is preselected by
+      // default; if nothing is selected, pick the file resume card (never the
+      // AI-tailored beta card — it needs human review).
+      if (/resume-selection/i.test(this.page.url())) {
+        const checked = await this.page
+          .locator('input[name="resume-selection"]:checked')
+          .count()
+          .catch(() => 0)
+        if (checked === 0) {
+          const fileCard = this.page
+            .locator('[data-testid="resume-selection-file-resume-radio-card-button"], [data-testid="FileResumeCard-input"]')
+            .first()
+          if (await this.waitVisible(fileCard, 3000)) await fileCard.click().catch(() => undefined)
+        }
       }
 
       await this.fillKnownFields(profile)
@@ -204,9 +231,9 @@ export class IndeedClient {
       }
 
       const cont = this.page
-        .locator('button:has-text("Continue"), button:has-text("Next"), button[data-testid="continue-button"]')
+        .locator('button[data-testid="continue-button"], button:has-text("Continue"), button:has-text("Next")')
         .first()
-      if (await this.waitVisible(cont, 2000)) {
+      if (await this.waitVisible(cont, 8000)) {
         const unanswered = await this.hasUnansweredRequired()
         if (unanswered) {
           return {
