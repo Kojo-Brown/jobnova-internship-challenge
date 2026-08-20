@@ -14,10 +14,12 @@ export function BriefcaseIcon({ className = 'size-4' }: IconProps) {
 }
 
 export function InterviewIcon({ className = 'size-4' }: IconProps) {
+  // Airplay/screencast mark used for "AI Mock Interview" in the Figma design:
+  // a rounded rectangle with a small triangle at the bottom edge.
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={`${base} ${className}`} aria-hidden="true">
-      <rect x="3" y="5" width="18" height="13" rx="2.5" />
-      <path d="M9 21h6M7.5 9.5h4M7.5 13h7" />
+      <rect x="3.5" y="4.5" width="17" height="12" rx="2.5" />
+      <path d="M12 14.5 15.5 19h-7L12 14.5Z" fill="currentColor" stroke="none" />
     </svg>
   )
 }

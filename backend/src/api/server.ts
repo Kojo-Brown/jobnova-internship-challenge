@@ -16,6 +16,16 @@ export function createServer() {
   const app = express()
   app.use(express.json())
 
+  // Read-only CORS so the frontend demo (Vite dev server / GitHub Pages) can
+  // display live application statuses. Mutating routes stay same-origin.
+  app.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      res.setHeader('Access-Control-Allow-Methods', 'GET')
+    }
+    next()
+  })
+
   let busy = false
 
   // Singleton stores: all requests must share one JsonStore instance so its

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { Job, Tab, WorkMode } from '../types'
 import { JobCard } from '../components/JobCard'
+import { LiveApplications } from '../components/LiveApplications'
 import { MockInterviewRail } from '../components/MockInterviewRail'
 import { ListSkeleton } from '../components/Skeletons'
 import { RefreshIcon, SearchIcon } from '../components/Icons'
@@ -60,6 +61,8 @@ export function JobList({ jobs, tab, loading, liked, applied, onOpen, onToggleLi
   return (
     <div className="mx-auto grid w-full max-w-[1120px] grid-cols-1 items-start gap-6 px-4 py-6 sm:px-6 xl:grid-cols-[minmax(0,1fr)_340px]">
       <div>
+        {/* Part 2 integration: real Indeed application statuses on the Applied tab */}
+        {tab === 'applied' && <LiveApplications />}
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <button
             type="button"

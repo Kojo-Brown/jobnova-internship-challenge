@@ -1,5 +1,6 @@
 import type { Tab } from '../types'
-import { BoltIcon, MenuIcon } from './Icons'
+import { MenuIcon } from './Icons'
+import { JobNovaMark } from './Logo'
 
 interface TopNavProps {
   tab: Tab
@@ -31,9 +32,7 @@ export function TopNav({ tab, onTabChange, likedCount, appliedCount, onOpenMenu 
         </button>
 
         <a href="#/" className="flex items-center gap-2" aria-label="JobNova home">
-          <span className="flex size-9 items-center justify-center rounded-xl bg-ink">
-            <BoltIcon className="size-5 text-brand-400" />
-          </span>
+          <JobNovaMark className="size-9" />
           <span className="hidden text-xl font-extrabold tracking-tight min-[420px]:inline">JobNova</span>
         </a>
 
