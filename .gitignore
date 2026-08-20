@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# builds
+dist/
+build/
+coverage/
+
+# env & secrets
+.env
+.env.*
+!.env.example
+
+# backend runtime data (sessions, app db, artifacts)
+backend/data/
+backend/profile.json
+
+# OS / editor
+.DS_Store
+*.log
+.idea/
+.vscode/
+
+# challenge source doc (binary)
+*.docx
