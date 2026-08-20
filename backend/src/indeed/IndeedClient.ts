@@ -28,13 +28,22 @@ export class IndeedClient {
   constructor(private page: Page) {}
 
   /**
-   * Wait up to `timeout` ms for a locator to become visible.
+   * The first VISIBLE match for a locator. Indeed renders several hidden
+   * responsive/experiment variants of the same control (e.g. five "Continue"
+   * buttons where only one is displayed), so `.first()` in DOM order easily
+   * lands on a hidden node and every wait then times out.
+   */
+  private visible(locator: Locator): Locator {
+    return locator.filter({ visible: true }).first()
+  }
+
+  /**
+   * Wait up to `timeout` ms for any match to become visible.
    * (`isVisible({timeout})` does NOT wait in Playwright — its timeout option
    * is deprecated and ignored, so we use waitFor instead.)
    */
   private async waitVisible(locator: Locator, timeout: number): Promise<boolean> {
-    return locator
-      .first()
+    return this.visible(locator)
       .waitFor({ state: 'visible', timeout })
       .then(() => true)
       .catch(() => false)
@@ -149,12 +158,10 @@ export class IndeedClient {
     if (challenge) return { outcome: 'manual', kind: challenge.kind, checkpoint: 'view_job', description: challenge.description }
 
     // Indeed A/B-tests this button: id, testid and label all vary.
-    const applyButton = this.page
-      .locator(
-        '[data-testid="indeedApplyButton-test"], #indeedApplyButton, ' +
-          'button:has-text("Apply with Indeed"), button:has-text("Easily apply"), button:has-text("Apply now")',
-      )
-      .first()
+    const applyButton = this.page.locator(
+      '[data-testid="indeedApplyButton-test"], #indeedApplyButton, ' +
+        'button:has-text("Apply with Indeed"), button:has-text("Easily apply"), button:has-text("Apply now")',
+    )
     if (!(await this.waitVisible(applyButton, 8000))) {
       return { outcome: 'failed', reason: 'No Easily apply button on this posting (external ATS?)' }
     }
@@ -166,7 +173,7 @@ export class IndeedClient {
     let popup: Page | null = null
     for (let attempt = 0; attempt < 3; attempt++) {
       const popupPromise = this.page.context().waitForEvent('page', { timeout: 5000 }).catch(() => null)
-      await applyButton.click().catch(() => undefined)
+      await this.visible(applyButton).click().catch(() => undefined)
       popup = await popupPromise
       if (popup) break
       await this.page.waitForTimeout(2000)
@@ -199,10 +206,10 @@ export class IndeedClient {
           .count()
           .catch(() => 0)
         if (checked === 0) {
-          const fileCard = this.page
-            .locator('[data-testid="resume-selection-file-resume-radio-card-button"], [data-testid="FileResumeCard-input"]')
-            .first()
-          if (await this.waitVisible(fileCard, 3000)) await fileCard.click().catch(() => undefined)
+          const fileCard = this.page.locator(
+            '[data-testid="resume-selection-file-resume-radio-card-button"], [data-testid="FileResumeCard-input"]',
+          )
+          if (await this.waitVisible(fileCard, 3000)) await this.visible(fileCard).click().catch(() => undefined)
         }
       }
 
@@ -217,11 +224,11 @@ export class IndeedClient {
         return { outcome: 'submitted' }
       }
 
-      const submit = this.page
-        .locator('button:has-text("Submit your application"), button:has-text("Submit application")')
-        .first()
+      const submit = this.page.locator(
+        'button:has-text("Submit your application"), button:has-text("Submit application")',
+      )
       if (await this.waitVisible(submit, 500)) {
-        await submit.click()
+        await this.visible(submit).click()
         await this.page.waitForTimeout(2500)
         challenge = await this.detectChallenge()
         if (challenge) {
@@ -230,9 +237,14 @@ export class IndeedClient {
         return { outcome: 'submitted' }
       }
 
-      const cont = this.page
-        .locator('button[data-testid="continue-button"], button:has-text("Continue"), button:has-text("Next")')
-        .first()
+      // Sub-forms (e.g. resume-module education edits) use Save-style
+      // buttons. ":text-is" keeps "Save" exact so "Save and close" (the
+      // wizard EXIT button) can never match.
+      const cont = this.page.locator(
+        'button[data-testid="continue-button"], button:has-text("Save and continue"), ' +
+          'button:text-is("Save"), button:has-text("Continue"), button:has-text("Next"), ' +
+          'button:has-text("Review your application")',
+      )
       if (await this.waitVisible(cont, 8000)) {
         const unanswered = await this.hasUnansweredRequired()
         if (unanswered) {
@@ -243,7 +255,28 @@ export class IndeedClient {
             description: `Screener question needs a manual answer: "${unanswered}"`,
           }
         }
-        await cont.click()
+        const urlBefore = this.page.url()
+        await this.visible(cont).click()
+        await this.page.waitForTimeout(2000)
+        // Indeed marks required questions with a visual asterisk only (no
+        // required/aria-required attributes), so a blocked Continue plus a
+        // visible validation error is our signal to hand over to a human.
+        if (this.page.url() === urlBefore) {
+          const blocker = await this.visibleValidationError()
+          if (blocker) {
+            const pending = (await this.extractScreenerQuestions().catch(() => []))
+              .map((q) => q.question)
+              .filter(Boolean)
+              .slice(0, 2)
+              .join(' | ')
+            return {
+              outcome: 'manual',
+              kind: 'unknown_challenge',
+              checkpoint: `apply_step_${step}`,
+              description: `Wizard blocked (“${blocker}”)${pending ? ` — unanswered: ${pending}` : ''}. Add a matching screenerAnswers entry or finish this application manually.`,
+            }
+          }
+        }
         continue
       }
 
@@ -262,32 +295,124 @@ export class IndeedClient {
       ['input[type="tel"], input[name*="phone" i]', profile.phone],
     ]
     for (const [sel, value] of byName) {
-      const input = this.page.locator(sel).first()
+      const input = this.visible(this.page.locator(sel))
       if (await input.isVisible().catch(() => false)) {
         if (!(await input.inputValue().catch(() => 'x'))) await input.fill(value).catch(() => undefined)
       }
     }
 
-    // Screener questions: match the question label against configured answers.
-    const groups = this.page.locator('fieldset, [data-testid="input-question"]')
-    const count = await groups.count().catch(() => 0)
-    for (let i = 0; i < count; i++) {
-      const group = groups.nth(i)
-      const label = ((await group.innerText().catch(() => '')) || '').toLowerCase()
-      const match = Object.entries(profile.screenerAnswers).find(([key]) => label.includes(key.toLowerCase()))
+    // Screener questions: extract them from the DOM and match the question
+    // text against configured answers.
+    const questions = await this.extractScreenerQuestions().catch(() => [])
+    for (const q of questions) {
+      const match = Object.entries(profile.screenerAnswers).find(([key]) =>
+        q.question.toLowerCase().includes(key.toLowerCase()),
+      )
       if (!match) continue
       const answer = match[1]
 
-      const radio = group.locator(`label:has-text("${answer}") input[type="radio"], input[type="radio"][value="${answer}" i]`).first()
-      if (await radio.isVisible().catch(() => false)) {
-        await radio.check().catch(() => undefined)
-        continue
-      }
-      const text = group.locator('input[type="text"], input[type="number"], textarea').first()
-      if (await text.isVisible().catch(() => false)) {
-        if (!(await text.inputValue().catch(() => 'x'))) await text.fill(answer).catch(() => undefined)
+      if (q.kind === 'radio') {
+        const wanted = answer.toLowerCase()
+        const option =
+          q.options?.find((o) => o.label.toLowerCase() === wanted) ??
+          q.options?.find((o) => o.label.toLowerCase().startsWith(wanted))
+        if (option) {
+          // force: the real input often sits under a styled label
+          await this.page
+            .locator(`input[name="${q.name}"][value="${option.value}"]`)
+            .first()
+            .check({ force: true })
+            .catch(() => undefined)
+        }
+      } else {
+        await this.page
+          .locator(`[name="${q.name}"]`)
+          .first()
+          .fill(answer)
+          .catch(() => undefined)
       }
     }
+  }
+
+  /**
+   * Pull the visible, still-unanswered screener questions out of the page:
+   * radio groups (with their option labels) and empty text fields. The hidden
+   * g-recaptcha-response token field is NOT a question and is skipped.
+   */
+  private async extractScreenerQuestions(): Promise<
+    Array<{ kind: 'radio' | 'text'; name: string; question: string; options?: Array<{ value: string; label: string }> }>
+  > {
+    return this.page.evaluate(() => {
+      const isShown = (el: Element) => !!((el as HTMLElement).offsetWidth || (el as HTMLElement).offsetHeight)
+      const clean = (s: string) => s.replace(/\s+/g, ' ').trim()
+      const questionTextFor = (el: Element): string => {
+        let node: Element | null = el.parentElement
+        let text = ''
+        for (let depth = 0; node && depth < 6; depth++) {
+          text = clean((node as HTMLElement).innerText ?? '')
+          if (text.length > 15 && /[?*]/.test(text)) break
+          node = node.parentElement
+        }
+        return text.slice(0, 200)
+      }
+
+      const out: Array<{
+        kind: 'radio' | 'text'
+        name: string
+        question: string
+        options?: Array<{ value: string; label: string }>
+      }> = []
+
+      const radioGroups = new Map<string, HTMLInputElement[]>()
+      for (const r of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"]'))) {
+        if (!isShown(r) && !isShown(r.closest('label') ?? r)) continue
+        const list = radioGroups.get(r.name) ?? []
+        list.push(r)
+        radioGroups.set(r.name, list)
+      }
+      for (const [name, radios] of radioGroups) {
+        if (radios.some((r) => r.checked)) continue
+        const first = radios[0]
+        if (!first) continue
+        let container: Element | null = first
+        while (container && !radios.every((r) => container!.contains(r))) container = container.parentElement
+        out.push({
+          kind: 'radio',
+          name,
+          question: container ? clean((container as HTMLElement).innerText).slice(0, 200) : questionTextFor(first),
+          options: radios.map((r) => ({
+            value: r.value,
+            label: clean(
+              r.closest('label')?.innerText ??
+                (r.id ? document.querySelector(`label[for="${r.id}"]`)?.textContent ?? r.value : r.value),
+            ),
+          })),
+        })
+      }
+
+      for (const t of Array.from(
+        document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+          'textarea, input[type="text"]:not([name*="location"]), input[type="number"]',
+        ),
+      )) {
+        if (!isShown(t) || t.value) continue
+        if (!t.name || t.name === 'g-recaptcha-response') continue
+        out.push({ kind: 'text', name: t.name, question: questionTextFor(t) })
+      }
+      return out
+    })
+  }
+
+  /** A visible form-validation message blocking the current wizard step. */
+  private async visibleValidationError(): Promise<string | null> {
+    const err = this.visible(
+      this.page.locator('text=/to continue|is required|select an option|choose an option|please answer|please select/i'),
+    )
+    if (await err.isVisible().catch(() => false)) {
+      const text = await err.innerText().catch(() => null)
+      return text ? text.trim().slice(0, 120) : 'validation error'
+    }
+    return null
   }
 
   /**
