@@ -141,7 +141,10 @@ user + job). To grow beyond single-user:
    each application an independent, resumable unit. Concurrency per user stays
    at 1 (one Indeed session), while users scale horizontally across workers.
 4. **Storage.** `JsonStore` is an interface-compatible seam — replace with
-   Postgres/SQLite repositories without touching workflow code.
+   Postgres/SQLite repositories without touching workflow code. (Known
+   single-user limitation: the file store serializes writers within one
+   process, so run either the CLI **or** the API server against a data dir at
+   a time; a real database removes that constraint.)
 5. **Manual-action inbox.** Surface `manual_action_required` records in a UI
    (webhook/notification per user) so each user can clear their own
    challenges; `resume` is already idempotent and per-user.

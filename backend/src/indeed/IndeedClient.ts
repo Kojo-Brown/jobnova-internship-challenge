@@ -1,7 +1,13 @@
-import type { Page } from 'playwright'
+import type { Locator, Page } from 'playwright'
 import type { JobPosting, ManualActionKind, Profile } from '../types.js'
 
 export type ChallengeCheck = { kind: ManualActionKind; description: string } | null
+
+export interface SearchResult {
+  jobs: JobPosting[]
+  /** Set when a verification wall interrupted the search. */
+  challenge: ChallengeCheck
+}
 
 export type ApplyResult =
   | { outcome: 'submitted' }
@@ -22,6 +28,19 @@ export class IndeedClient {
   constructor(private page: Page) {}
 
   /**
+   * Wait up to `timeout` ms for a locator to become visible.
+   * (`isVisible({timeout})` does NOT wait in Playwright — its timeout option
+   * is deprecated and ignored, so we use waitFor instead.)
+   */
+  private async waitVisible(locator: Locator, timeout: number): Promise<boolean> {
+    return locator
+      .first()
+      .waitFor({ state: 'visible', timeout })
+      .then(() => true)
+      .catch(() => false)
+  }
+
+  /**
    * Detect verification walls. Order matters: a CAPTCHA page may also contain
    * the word "verification" in copy, so check the most specific signals first.
    */
@@ -35,12 +54,7 @@ export class IndeedClient {
       { sel: 'text=/verify your email/i', kind: 'email_verification', description: 'Email verification required' },
     ]
     for (const { sel, kind, description } of selectors) {
-      const visible = await this.page
-        .locator(sel)
-        .first()
-        .isVisible({ timeout: 500 })
-        .catch(() => false)
-      if (visible) return { kind, description }
+      if (await this.waitVisible(this.page.locator(sel), 500)) return { kind, description }
     }
 
     if (/additional verification|are you a human|hold on|just a moment/i.test(title) || /\/challenge|\/blocked/i.test(url)) {
@@ -55,10 +69,7 @@ export class IndeedClient {
     const accountButton = this.page.locator(
       '[data-gnav-element-name="AccountMenu"], a[href*="myaccount"], button[aria-label*="account" i]',
     )
-    return accountButton
-      .first()
-      .isVisible({ timeout: 4000 })
-      .catch(() => false)
+    return this.waitVisible(accountButton, 6000)
   }
 
   async gotoLogin(): Promise<void> {
@@ -68,9 +79,10 @@ export class IndeedClient {
   /**
    * Search and collect a small number of job cards relevant to the profile.
    * Only "Easily apply" postings are returned — external ATS sites are out of
-   * scope for the minimal module.
+   * scope for the minimal module. A verification wall aborts the search and is
+   * reported to the caller instead of being silently swallowed.
    */
-  async searchJobs(profile: Profile, limit: number): Promise<JobPosting[]> {
+  async searchJobs(profile: Profile, limit: number): Promise<SearchResult> {
     const results: JobPosting[] = []
     const seen = new Set<string>()
 
@@ -78,9 +90,11 @@ export class IndeedClient {
       if (results.length >= limit) break
       const params = new URLSearchParams({ q: query, l: profile.jobPreferences.location, sc: '0kf:attr(DSQF7);' })
       await this.page.goto(`${BASE}/jobs?${params}`, { waitUntil: 'domcontentloaded' })
-      if (await this.detectChallenge()) break
+      const challenge = await this.detectChallenge()
+      if (challenge) return { jobs: results, challenge }
 
       const cards = this.page.locator('[data-testid="slider_item"], .job_seen_beacon')
+      await this.waitVisible(cards, 8000)
       const count = Math.min(await cards.count().catch(() => 0), 15)
 
       for (let i = 0; i < count && results.length < limit; i++) {
@@ -106,7 +120,7 @@ export class IndeedClient {
         results.push({ jobKey, title, company, url: `${BASE}/viewjob?jk=${jobKey}` })
       }
     }
-    return results
+    return { jobs: results, challenge: null }
   }
 
   /**
@@ -115,6 +129,20 @@ export class IndeedClient {
    * human is needed.
    */
   async apply(job: JobPosting, profile: Profile): Promise<ApplyResult> {
+    const originalPage = this.page
+    let popup: Page | null = null
+    try {
+      return await this.applyInner(job, profile, (p) => {
+        popup = p
+      })
+    } finally {
+      // Session state lives in cookies, so the wizard tab can be closed safely.
+      if (popup) await (popup as Page).close().catch(() => undefined)
+      this.page = originalPage
+    }
+  }
+
+  private async applyInner(job: JobPosting, profile: Profile, onPopup: (p: Page) => void): Promise<ApplyResult> {
     await this.page.goto(job.url, { waitUntil: 'domcontentloaded' })
 
     let challenge = await this.detectChallenge()
@@ -123,17 +151,24 @@ export class IndeedClient {
     const applyButton = this.page
       .locator('#indeedApplyButton, button:has-text("Easily apply"), button:has-text("Apply now")')
       .first()
-    if (!(await applyButton.isVisible({ timeout: 5000 }).catch(() => false))) {
+    if (!(await this.waitVisible(applyButton, 8000))) {
       return { outcome: 'failed', reason: 'No Easily apply button on this posting (external ATS?)' }
     }
-    // The apply wizard (smartapply.indeed.com) may open in a popup tab.
-    const popupPromise = this.page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null)
+
+    // The apply wizard (smartapply.indeed.com) opens either in a popup tab or
+    // in-place; race the two so neither path adds a fixed stall.
+    const popupPromise = this.page.context().waitForEvent('page', { timeout: 10_000 }).catch(() => null)
+    const navPromise = this.page
+      .waitForURL(/smartapply|apply/i, { timeout: 10_000 })
+      .then(() => null)
+      .catch(() => null)
     await applyButton.click()
-    const popup = await popupPromise
+    const popup = await Promise.race([popupPromise, navPromise])
     if (popup) {
+      onPopup(popup)
       this.page = popup
     }
-    await this.page.waitForLoadState('domcontentloaded')
+    await this.page.waitForLoadState('domcontentloaded').catch(() => undefined)
 
     // The apply wizard is a multi-step form; walk up to 12 steps.
     for (let step = 0; step < 12; step++) {
@@ -146,18 +181,19 @@ export class IndeedClient {
 
       await this.fillKnownFields(profile)
 
-      // Terminal state?
+      // Terminal state? Match explicit confirmation copy only — a bare
+      // "applied" appears in nav items and must not count as success.
       const done = this.page.locator(
-        'text=/application submitted|your application has been submitted|applied/i',
+        '[data-testid*="success" i], text=/application (has been )?submitted|successfully applied/i',
       )
-      if (await done.first().isVisible({ timeout: 500 }).catch(() => false)) {
+      if (await this.waitVisible(done, 500)) {
         return { outcome: 'submitted' }
       }
 
       const submit = this.page
         .locator('button:has-text("Submit your application"), button:has-text("Submit application")')
         .first()
-      if (await submit.isVisible({ timeout: 500 }).catch(() => false)) {
+      if (await this.waitVisible(submit, 500)) {
         await submit.click()
         await this.page.waitForTimeout(2500)
         challenge = await this.detectChallenge()
@@ -170,7 +206,7 @@ export class IndeedClient {
       const cont = this.page
         .locator('button:has-text("Continue"), button:has-text("Next"), button[data-testid="continue-button"]')
         .first()
-      if (await cont.isVisible({ timeout: 2000 }).catch(() => false)) {
+      if (await this.waitVisible(cont, 2000)) {
         const unanswered = await this.hasUnansweredRequired()
         if (unanswered) {
           return {
@@ -200,7 +236,7 @@ export class IndeedClient {
     ]
     for (const [sel, value] of byName) {
       const input = this.page.locator(sel).first()
-      if (await input.isVisible({ timeout: 300 }).catch(() => false)) {
+      if (await input.isVisible().catch(() => false)) {
         if (!(await input.inputValue().catch(() => 'x'))) await input.fill(value).catch(() => undefined)
       }
     }
@@ -216,34 +252,58 @@ export class IndeedClient {
       const answer = match[1]
 
       const radio = group.locator(`label:has-text("${answer}") input[type="radio"], input[type="radio"][value="${answer}" i]`).first()
-      if (await radio.isVisible({ timeout: 200 }).catch(() => false)) {
+      if (await radio.isVisible().catch(() => false)) {
         await radio.check().catch(() => undefined)
         continue
       }
       const text = group.locator('input[type="text"], input[type="number"], textarea').first()
-      if (await text.isVisible({ timeout: 200 }).catch(() => false)) {
+      if (await text.isVisible().catch(() => false)) {
         if (!(await text.inputValue().catch(() => 'x'))) await text.fill(answer).catch(() => undefined)
       }
     }
   }
 
-  /** Returns the label of the first required-but-empty question, if any. */
+  /**
+   * Returns the label of the first required-but-empty question, if any.
+   * Covers text/number/textarea/select values AND radio/checkbox groups
+   * (a required radio group with nothing checked must pause the workflow,
+   * not silently loop the Continue button).
+   */
   private async hasUnansweredRequired(): Promise<string | null> {
-    const required = this.page.locator('[aria-required="true"], [required]')
-    const count = await required.count().catch(() => 0)
-    for (let i = 0; i < count; i++) {
-      const el = required.nth(i)
-      const tag = await el.evaluate((n) => n.tagName.toLowerCase()).catch(() => '')
-      if (tag === 'input' || tag === 'textarea' || tag === 'select') {
-        const value = await el.inputValue().catch(() => '')
-        const type = (await el.getAttribute('type').catch(() => '')) ?? ''
-        if (type === 'radio' || type === 'checkbox') continue
-        if (!value) {
-          const label = await el.evaluate((n) => n.closest('fieldset, label, div')?.textContent?.slice(0, 120) ?? '').catch(() => '')
-          return label || 'required field'
+    return this.page
+      .evaluate(() => {
+        const labelFor = (el: Element): string =>
+          (el.closest('fieldset, label, div')?.textContent ?? 'required field').trim().slice(0, 120) || 'required field'
+
+        const isRequired = (el: Element): boolean =>
+          el.hasAttribute('required') ||
+          el.getAttribute('aria-required') === 'true' ||
+          el.closest('[aria-required="true"]') !== null
+
+        // Radio/checkbox groups, grouped by name
+        const groups = new Map<string, HTMLInputElement[]>()
+        for (const input of Array.from(document.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]'))) {
+          const name = input.name || labelFor(input)
+          const list = groups.get(name) ?? []
+          list.push(input)
+          groups.set(name, list)
         }
-      }
-    }
-    return null
+        for (const inputs of groups.values()) {
+          const required = inputs.some((i) => isRequired(i))
+          const answered = inputs.some((i) => i.checked)
+          if (required && !answered && inputs[0]) return labelFor(inputs[0])
+        }
+
+        // Value-bearing fields
+        for (const el of Array.from(
+          document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(
+            'input:not([type="radio"]):not([type="checkbox"]):not([type="hidden"]), textarea, select',
+          ),
+        )) {
+          if (isRequired(el) && !el.value) return labelFor(el)
+        }
+        return null
+      })
+      .catch(() => null)
   }
 }

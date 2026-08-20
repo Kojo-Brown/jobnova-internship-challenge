@@ -18,13 +18,32 @@ export function createServer() {
 
   let busy = false
 
-  const withWorkflow = async () => {
-    const config = loadConfig()
-    const profile = await loadProfile()
-    const sessions = new SessionStore(config.dataDir, config.sessionEncKey)
-    const applications = new ApplicationStore(config.dataDir)
-    const workflow = new ApplyWorkflow({ sessions, applications, profile, headless: config.headless, log: console.log })
-    return { workflow, applications, sessions, profile }
+  // Singleton stores: all requests must share one JsonStore instance so its
+  // write queue actually serializes concurrent updates. Built lazily so
+  // /health works before profile.json/.env exist.
+  interface Deps {
+    workflow: ApplyWorkflow
+    applications: ApplicationStore
+    sessions: SessionStore
+    profile: Awaited<ReturnType<typeof loadProfile>>
+  }
+
+  let depsPromise: Promise<Deps> | null = null
+
+  const withWorkflow = (): Promise<Deps> => {
+    depsPromise ??= (async () => {
+      const config = loadConfig()
+      const profile = await loadProfile()
+      const sessions = new SessionStore(config.dataDir, config.sessionEncKey)
+      const applications = new ApplicationStore(config.dataDir)
+      const workflow = new ApplyWorkflow({ sessions, applications, profile, headless: config.headless, log: console.log })
+      return { workflow, applications, sessions, profile }
+    })().catch((err) => {
+      // bad config/profile: allow a retry once the operator fixes it
+      depsPromise = null
+      throw err
+    })
+    return depsPromise
   }
 
   const runExclusive = async (
@@ -80,12 +99,9 @@ export function createServer() {
   })
 
   app.post('/applications/:id/retry', async (req, res) => {
-    try {
-      const { workflow } = await withWorkflow()
-      res.json(await workflow.retry(req.params.id))
-    } catch (err) {
-      res.status(400).json({ error: (err as Error).message })
-    }
+    // Shares the exclusive lock: a retry must not interleave with a running
+    // workflow's read-modify-write cycle on the same store.
+    await runExclusive(res, async () => (await withWorkflow()).workflow.retry(req.params.id))
   })
 
   return app

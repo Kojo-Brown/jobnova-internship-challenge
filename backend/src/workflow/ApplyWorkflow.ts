@@ -51,17 +51,34 @@ export class ApplyWorkflow {
         return true
       }
       await client.gotoLogin()
+      await page.bringToFront().catch(() => undefined)
       this.log('Complete the login (including any SMS/email/CAPTCHA check) in the opened browser…')
-      const deadline = Date.now() + timeoutMinutes * 60_000
-      while (Date.now() < deadline) {
-        await page.waitForTimeout(5000)
-        if (await client.isLoggedIn()) {
-          this.log('Login detected — saving encrypted session.')
-          return true
+
+      // Poll login state in a SEPARATE probe tab — the operator's tab must
+      // never be navigated away mid-password or mid-challenge.
+      const probe = await page.context().newPage()
+      const probeClient = new IndeedClient(probe)
+      await page.bringToFront().catch(() => undefined)
+      try {
+        const deadline = Date.now() + timeoutMinutes * 60_000
+        while (Date.now() < deadline) {
+          await probe.waitForTimeout(10_000)
+          if (page.isClosed()) {
+            this.log('Login window was closed before login completed.')
+            return false
+          }
+          const loggedIn = await probeClient.isLoggedIn()
+          await page.bringToFront().catch(() => undefined)
+          if (loggedIn) {
+            this.log('Login detected — saving encrypted session.')
+            return true
+          }
         }
+        this.log('Timed out waiting for manual login.')
+        return false
+      } finally {
+        await probe.close().catch(() => undefined)
       }
-      this.log('Timed out waiting for manual login.')
-      return false
     } finally {
       await session.close({ persist: true })
     }
@@ -77,7 +94,17 @@ export class ApplyWorkflow {
       if (!(await client.isLoggedIn())) {
         throw new Error('Not logged in. Run the "login" command first (headed manual login).')
       }
-      const jobs = await client.searchJobs(profile, profile.jobPreferences.maxApplications)
+      const { jobs, challenge } = await client.searchJobs(profile, profile.jobPreferences.maxApplications)
+      if (challenge) {
+        // Surface the wall instead of silently returning a truncated list.
+        this.log(`⏸ Search interrupted by ${challenge.kind}: ${challenge.description}`)
+        if (jobs.length === 0) {
+          throw new Error(
+            `Job search blocked by manual verification (${challenge.kind}). ` +
+              'Run "login" to clear it in a headed browser, then try again.',
+          )
+        }
+      }
       this.log(`Found ${jobs.length} suitable "Easily apply" job(s).`)
       const records: ApplicationRecord[] = []
       for (const job of jobs) {

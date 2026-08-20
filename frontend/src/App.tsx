@@ -10,7 +10,9 @@ import { JobList } from './pages/JobList'
 
 function jobIdFromHash(): string | null {
   const match = window.location.hash.match(/^#\/job\/([\w-]+)/)
-  return match ? match[1] : null
+  const id = match ? match[1] : null
+  // unknown ids (stale or mistyped share links) fall back to the list
+  return id && getJob(id) ? id : null
 }
 
 function AppInner() {
@@ -48,26 +50,24 @@ function AppInner() {
     window.location.hash = '#/'
   }, [])
 
+  // Toasts fire outside the setState updaters — updaters must stay pure
+  // (StrictMode double-invokes them, which would double every toast).
   const toggleLike = useCallback(
     (job: Job) => {
-      setLiked((prev) => {
-        const isLiked = prev.includes(job.id)
-        toast(isLiked ? 'Removed from liked jobs' : 'Added to liked jobs', isLiked ? 'info' : 'success')
-        return isLiked ? prev.filter((id) => id !== job.id) : [...prev, job.id]
-      })
+      const isLiked = liked.includes(job.id)
+      toast(isLiked ? 'Removed from liked jobs' : 'Added to liked jobs', isLiked ? 'info' : 'success')
+      setLiked((prev) => (prev.includes(job.id) ? prev.filter((id) => id !== job.id) : [...prev, job.id]))
     },
-    [setLiked, toast],
+    [liked, setLiked, toast],
   )
 
   const apply = useCallback(
     (job: Job) => {
-      setApplied((prev) => {
-        if (prev.includes(job.id)) return prev
-        toast(`Application sent to ${job.company.name} 🎉`)
-        return [...prev, job.id]
-      })
+      if (applied.includes(job.id)) return
+      toast(`Application sent to ${job.company.name} 🎉`)
+      setApplied((prev) => (prev.includes(job.id) ? prev : [...prev, job.id]))
     },
-    [setApplied, toast],
+    [applied, setApplied, toast],
   )
 
   const upgrade = useCallback(() => {
