@@ -1,0 +1,37 @@
+{
+  "user": "default",
+  "fullName": "Your Name",
+  "email": "you@example.com",
+  "phone": "+1 555 000 0000",
+  "location": "New Haven, CT",
+  "resumePath": "./resume.pdf",
+  "jobPreferences": {
+    "queries": ["software engineer intern", "full stack developer"],
+    "location": "Remote",
+    "maxApplications": 3,
+    "excludeKeywords": ["senior", "staff", "principal", "director"]
+  },
+  "workExperience": [
+    {
+      "title": "Software Engineer",
+      "company": "Example Corp",
+      "from": "2022-01",
+      "to": "present",
+      "summary": "Full-stack development with React, TypeScript and Node.js."
+    }
+  ],
+  "education": [
+    {
+      "degree": "M.S. Computer Science",
+      "school": "Example University",
+      "graduated": "2024"
+    }
+  ],
+  "screenerAnswers": {
+    "authorized to work": "Yes",
+    "require sponsorship": "No",
+    "years of experience": "4",
+    "willing to relocate": "Yes",
+    "start date": "Immediately"
+  }
+}
