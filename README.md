@@ -29,7 +29,7 @@ npm test           # vitest
 npm run build      # production build
 ```
 
-Live demo: deployed to GitHub Pages by CI on every push to `main`.
+**Live demo:** https://kojo-brown.github.io/jobnova-internship-challenge/ (deployed by CI on every push to `main`).
 
 ## Part 2 — Backend (Indeed auto-apply module)
 
